@@ -1,0 +1,273 @@
+===========================================================================
+-------------------------README of SDSS-compspec---------------------------
+===========================================================================
+
+SDSS-compspec is used to read in a given number of quasar spectra
+either individually as a FITS file or as a file containing a list of
+paths to FITS files.
+It is capable of working with 
+spSpec 
+files created by the SDSS collaboration in the data releases DR5 - DR7
+(possibly earlier as well) and
+spec
+files from DR9 and DR10.
+
+In the main working mode of the program it fits a powerlaw to each
+individual spectrum and adds it to a 'composite spectrum'. This is
+eventually printed to a new FITS file, which also includes information
+about all used QSOs.
+
+The main function of the program is located in the SDSS-spec.c, the
+compiled program is called SDSScompspec, as named in the Makefile.
+
+
+// Description of structs, compspec, spectrum, settings..
+
+---------------------------------------------------------------------------
+                                 Usage
+---------------------------------------------------------------------------
+
+compile the program:
+make
+
+after successful compilation run the program with
+./SDSScompspec [options] <inputfile>
+
+the options and their use are described in the last part of the
+README. The input file may either be a single FITS file containing a
+single spectrum, a FITS file containing a whole plate (spPlate), or a
+file, containing a list of individual spectra stored in spSpec or spec
+FITS files. 
+
+
+---------------------------------------------------------------------------
+                 
+---------------------------------------------------------------------------
+
+1. 
+setting options based on command line parameters, if none given, use
+default options hardcoded into the code
+
+2.
+Call 
+SDSS_rinputfile(spectrum* spec, int *nspec, char *infile)
+SDSS_rinputfile first checks whether the input file given on the
+command line is a single FITS file or a text file containing a list of
+FITS files. 
+If list of files:
+a) determine MJD, plateid and fiberid from filename
+b) call SDSS_filetype for each file in the list
+   reads file name and determines if spSpec, spPlate or spec file and returns
+   an integer value, which corresponds to either spSpec, spPlate or
+   spec with 0, 1 and 2 respectively.
+spectrum datatype contains 
+PlateSpec
+an integer, which saves what kind of data file it is.
+Hence, SDSS_rinputfile sets this variable for each spectrum given in
+the list file.
+
+3.
+Call 
+SDSS_compinit(compspec *cspec, settings *set)
+Initialises the composite spectrum. Allocates memory for arrays and
+sets wavelength array to a standard value:
+    for(i=0;i<N;i++)
+    {
+      //(*cspec)[j].wl[i]=pow(10,3.57520+.0001*i);
+    	(*cspec)[j].wl[i]=pow(10,3.58020+.0001*i);
+    }
+Note: Commented out is standard value in SDSScompspec, 2nd value is
+mine, slightly changed (still low enough, corresponds to 3803),
+because that way compspecs lowest wavelength is always longer than of
+each individuals spectrum (which causes oscillations..).
+4. 
+Start loop over all lines in the input file
+
+4.1.
+check filetype of FITS file, in which spectrum is saved, as determined
+by SDSS_rinputfile and call corresponding function
+SDSS_rspSpec(spectrum *spec, settings *set)
+or
+SDSS_rspec(spectrum *spec, settings *set)
+Both functions open fits file and read the following properties:
+PlateID
+FiberID
+MJD
+right ascension of object
+declination of object
+    calculate galactic coordinates of object by calling ast_eq2gal()
+PSF magnitudes in ugriz
+primtarg flags
+redshift
+number of spectral pixels
+    allocate memory for all relevant arrays of this size
+sets continuum level to "Joe Liske's favourite value" (written in
+comment)
+beginning of wavelength array
+increment of wavelength steps
+    calculate wavelength array from there
+dispersion in km/s
+flux of spectrum
+error of flux
+define signal to noise ratio 
+
+4.2
+only continue, if redshift 2.2 < z < 5.3, else take next spectrum
+
+4.3
+if galactic extinction corrections are done, 
+call
+SDSS_Ebv(spectrum *spec)
+and
+SDSS_Gal_extinct_correct(spectrum *spec)
+
+SDSS_Ebv:
+open dust maps and calculate E(B-V) using Schlegel et al. package
+save it in spectrum
+
+SDSS_Gal_extinct_corret:
+correct PSF magnitudes of spectrum and correct the spectrum 
+
+4.4
+Call
+medianrun(double *flux, double *co, double *st, int np,
+set.medcont) // check arguments
+From description of the function itself:
+MEDIANRUN: Function to calculate running median of a double array. The
+median smoothing is calculated using a scale-number of pixels,
+nfilt. The algorithm is taken from Paul Hewett's temcorr_4.f.
+Calculates the median-filter continuum array
+(I don't quite understand the meaning..)
+
+4.5
+Call
+SDSS_colors(spectrum *spec, int pfilter)
+Calculates the spectroscopic magnitudes in ugriz bands.
+First, builds color curves once, then calculates spectroscopic
+magnitudes for each spectrum
+colorcurves.h contains used bands.
+
+4.6
+Call
+SDSS_red_powerlaw(spectrum *spec)
+Define emission free fitting regions:
+{{1280.0,1292.0},{1312.0,1328.0},{1345.0,1365.0},{1440.0,1475.0}}
+Find median in emission free regions
+if median can be found in all regions, fit linearly to log-log data
+Calculate powerlaw continuum from fitted parameters and save in spectrum
+
+4.7
+make a cut on the spectral index alpha LOWCUT < alpha < TOPCUT
+(determined in settings?)
+
+4.8
+add spectrum to composite spectrum, call
+SDSS_compspec(compspec *cspec, spectrum *spec, settings *set)
+Calculates sum, from which the composite spectrum is calculated later,
+by:
+compspec.sum[wavelength] += spec.flux[wavelength] /
+spec.powerlaw_continuum[wavelength]
+
+nhist[wavelength]++
+   and add 1 to this wavelength, to count number of used QSOs for this
+   wavelength.
+
+4.9
+increment counter, which counts number of used spectra
+
+4.10
+plotting related functions
+
+4.11 
+free spectrum memory (all arrays of used spectrum)
+
+5.
+Call
+SDSS_statistics(compspec *cspec, spectrum **spec, int nspec, settings
+*set)
+Calculates composite spectrum:
+compspec.flux[wavelength] = compspec.sum[wavelength] /
+compspec.nhist[wavelength]
+Calculate further statistics 
+mean, rms, med and siqr (median? and ?)
+
+6.
+Call
+SDSS_compfits(compspec *cspec, spectrum **spec, int nspec, int
+speccount, settings *set)
+Writes results to FITS file
+two HDUs:
+    HDU1:
+    row 1[wavelength] = 1 - compspec.flux[wavelength+sidx] (no idea
+    yet what sidx is!)
+    row 2[wavelength] = compspec.fluxerror[wavelength+sidx]
+    row 3[wavelength] = compspec.nhist[wavelength+sidx]
+    
+    HDU2:
+    Information on all QSOs:
+    right ascension
+    declination
+    spectral index
+    spectral index error
+    galactic latitude
+    galactic longitude
+    redshift
+    MJD
+    PlateID
+    FiberID
+    Some array called p? Need to take a closer look further
+    spectroscopic magnitude in ugriz
+
+7.
+free rest of memory and end program
+
+
+
+---------------------------------------------------------------------------
+                    Possible command line options
+---------------------------------------------------------------------------
+
+-h, --help
+Print help
+
+--ncontsig
+Rejection threshold for continuum fit [sigma]
+
+--noext
+perform no galactic corrections
+
+--forest
+sets which forest is used
+
+-o, --outfile
+set name of outfile
+
+-N, --null
+calculate no composite spectrum
+
+-p, --plot
+Plot a single spectrum including fitted powerlaw
+
+--pfilter
+Flag for plotting filter curves (used in SDSS_color() )
+
+-v, --verbose
+no implemented use (should supress output I suppose ?)
+
+-S, --supress
+supress final output
+
+-d, --debug
+turn on debugging output
+
+-Y, --synflux
+Flag for using synflux instead of PC (?)
+
+--restspec
+
+-k
+settings.keep (?)
+
+-n, --nforest
+number of Forests derived in the program
+
